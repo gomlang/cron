@@ -1,0 +1,138 @@
+package cron;
+
+use ecosystem::datetime as dt;
+
+fn spend(steps: Ref[isize], limit: isize) -> Result[(), Error] {
+    if steps.get() >= limit {
+        return Result::Err(Error::WorkLimit);
+    }
+    steps.set(steps.get() + 1);
+    Result::Ok(())
+}
+
+fn consider(
+    best: Ref[Option[dt::UtcInstant]],
+    value: dt::UtcInstant,
+    after: dt::UtcInstant,
+    until: dt::UtcInstant,
+) -> () {
+    if value.compare(after) <= 0 || value.compare(until) > 0 {
+        return;
+    }
+    if let Some(previous) = best.get() {
+        if previous.compare(value) <= 0 {
+            return;
+        }
+    }
+    best.set(Option::Some(value));
+}
+
+fn finish(best: Option[dt::UtcInstant]) -> Result[dt::UtcInstant, Error] {
+    match best {
+        Some(value) => Result::Ok(value),
+        None => Result::Err(Error::NoMatch),
+    }
+}
+
+impl Schedule {
+    pub fn next(self: Schedule, after: dt::UtcInstant, zone: dt::TimeZone, options: Search) -> Result[
+        dt::UtcInstant,
+        Error,
+    ] {
+        if options.max_steps < 1 || options.max_steps > 10000000
+            || options.until.compare(after) <= 0 {
+            return Result::Err(
+                Error::InvalidOptions("until must exceed after; max_steps must be 1..10000000"),
+            );
+        }
+        let bound: i64 = 93599;
+        let mut lower = after.unix_seconds() - bound;
+        if lower < -62135596800 {
+            lower = -62135596800;
+        }
+        let mut date = dt::UtcInstant::new(lower, 0).map_err(Error::DateTime)?.to_utc().date();
+        let best = Ref::new(Option::None);
+        let steps = Ref::new(0);
+        loop {
+            let midnight = date.epoch_days() * 86400;
+            if midnight - bound > options.until.unix_seconds() {
+                return finish(best.get());
+            }
+            if let Some(value) = best.get() {
+                if midnight - bound >= value.unix_seconds() {
+                    return Result::Ok(value);
+                }
+            }
+            spend(steps, options.max_steps)?;
+            if !selected(self.month, date.month()) {
+                // Skip an entire unselected month instead of its individual days.
+                if date.year() == 9999 && date.month() == 12 {
+                    return finish(best.get());
+                }
+                let (year, month) = if date.month() == 12 {
+                    (date.year() + 1, 1)
+                } else {
+                    (date.year(), date.month() + 1)
+                };
+                date = dt::Date::new(year, month, 1).map_err(Error::DateTime)?;
+                continue;
+            }
+            if self.day_matches(date) {
+                for hour in 0..24 {
+                    if !selected(self.hour, hour) {
+                        continue;
+                    }
+                    for minute in 0..60 {
+                        if !selected(self.minute, minute) {
+                            continue;
+                        }
+                        let wall = midnight + (hour * 3600 + minute * 60).to_i64();
+                        if wall + bound <= after.unix_seconds() {
+                            continue;
+                        }
+                        if wall - bound > options.until.unix_seconds() {
+                            return finish(best.get());
+                        }
+                        if let Some(value) = best.get() {
+                            if wall - bound >= value.unix_seconds() {
+                                return Result::Ok(value);
+                            }
+                        }
+                        spend(steps, options.max_steps)?;
+                        let local = date.at(
+                            dt::Time::new(hour, minute, 0, 0).map_err(Error::DateTime)?,
+                        );
+                        let resolved = match zone.resolve_local(local) {
+                            Ok(value) => value,
+                            // This local date exists but has no representable UTC
+                            // instant at the edges of datetime's calendar range.
+                            Err(dt::Error::OutOfRange(_)) => continue,
+                            Err(error) => return Result::Err(Error::DateTime(error)),
+                        };
+                        match resolved {
+                            dt::LocalResult::Unique(value) => consider(
+                                best,
+                                value.instant(),
+                                after,
+                                options.until,
+                            ),
+                            dt::LocalResult::Ambiguous(earlier, later) => {
+                                if options.fold != Fold::Later {
+                                    consider(best, earlier.instant(), after, options.until);
+                                }
+                                if options.fold != Fold::Earlier {
+                                    consider(best, later.instant(), after, options.until);
+                                }
+                            },
+                            dt::LocalResult::Nonexistent => (),
+                        }
+                    }
+                }
+            }
+            if date.year() == 9999 && date.month() == 12 && date.day() == 31 {
+                return finish(best.get());
+            }
+            date = date.checked_add_days(1).map_err(Error::DateTime)?;
+        }
+    }
+}

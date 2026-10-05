@@ -1,0 +1,147 @@
+package tests;
+
+use ecosystem::cron as cron;
+use ecosystem::datetime as dt;
+use ecosystem::cron::examples::basic as application;
+use ecosystem::verification::reference;
+use std::testing;
+use std::crypto::hash;
+use std::fs;
+
+fn utc(text: string) -> dt::UtcInstant {
+    testing::expect_ok(dt::UtcInstant::parse(text), text)
+}
+
+fn check(result: Result[dt::UtcInstant, cron::Error], expected: string) -> () {
+    if expected == "none" {
+        testing::assert_eq(testing::expect_err(result, "no match"), cron::Error::NoMatch);
+    } else {
+        testing::assert_eq(testing::expect_ok(result, expected), utc(expected));
+    }
+}
+
+#[test]
+fn robfig_cron_frozen_public_reference() -> () {
+    let input = reference::load_text("tests/data/ordinary.tsv");
+    let zone = dt::TimeZone::fixed("UTC", dt::Offset::utc());
+    let mut count = 0;
+    for line in input.lines() {
+        let fields = line.split("\t");
+        let schedule = testing::expect_ok(cron::Schedule::parse(fields[0]), fields[0]);
+        let after = utc(fields[1]);
+        testing::assert_eq(
+            testing::expect_ok(schedule.matches(after, zone, cron::Fold::Both), "matches"),
+            fields[3] == "true",
+        );
+        let result = schedule.next(after, zone, cron::Search::new(utc(fields[2])));
+        check(result, fields[4]);
+        if let Ok(value) = result {
+            testing::assert(
+                testing::expect_ok(schedule.matches(value, zone, cron::Fold::Both), "next matches"),
+            );
+        }
+        count += 1;
+    }
+    testing::assert_eq(count, 640);
+}
+
+#[test]
+fn real_tzif_utc_enumeration_gap_fold_and_historical_reference() -> () {
+    let zones: HashMap[string, dt::TimeZone] = HashMap::new();
+    let input = reference::load_text("tests/data/zones.tsv");
+    let mut count = 0;
+    for line in input.lines() {
+        let fields = line.split("\t");
+        let name = fields[4];
+        let zone = match zones.get(name) {
+            Some(value) => value,
+            None => {
+                let value = testing::expect_ok(
+                    dt::TimeZone::load_from(application::fixture_path("testdata/zones"), name),
+                    name,
+                );
+                zones.set(name, value);
+                value
+            },
+        };
+        let fold = match fields[3] {
+            "earlier" => cron::Fold::Earlier,
+            "later" => cron::Fold::Later,
+            _ => cron::Fold::Both,
+        };
+        let schedule = testing::expect_ok(cron::Schedule::parse(fields[0]), fields[0]);
+        let result = schedule.next(
+            utc(fields[1]),
+            zone,
+            cron::Search { until: utc(fields[2]), max_steps: 1000000, fold },
+        );
+        check(result, fields[5]);
+        if let Ok(value) = result {
+            testing::assert(testing::expect_ok(schedule.matches(value, zone, fold), "next matches"));
+        }
+        count += 1;
+    }
+    testing::assert_eq(count, 900);
+}
+
+#[test]
+fn timezone_fixture_checksums() -> () {
+    let directory = application::fixture_path("testdata/zones/");
+    let manifest = testing::expect_ok(
+        fs::read_file_structured(directory + "SHA256SUMS"),
+        "checksums",
+    );
+    for line in manifest.lines() {
+        let fields = line.split("  ");
+        testing::assert_eq(
+            testing::expect_ok(hash::sha256_file(directory + fields[1]), "hash"),
+            fields[0],
+        );
+    }
+}
+
+#[test]
+fn zone_input_snapshot_and_unknown_future_errors() -> () {
+    let bytes = testing::expect_ok(
+        fs::read_bytes_structured(application::fixture_path("testdata/zones/America/New_York")),
+        "bytes",
+    );
+    let zone = testing::expect_ok(dt::TimeZone::from_tzif("snapshot", bytes), "parse");
+    bytes.set(0, 0);
+    bytes.clear();
+    bytes.push(255);
+    let schedule = testing::expect_ok(cron::Schedule::parse("30 1 * * *"), "schedule");
+    testing::assert_eq(
+        testing::expect_ok(
+            schedule.next(
+                utc("2024-11-03T05:45:00Z"),
+                zone,
+                cron::Search::new(utc("2024-11-04T00:00:00Z")),
+            ),
+            "retained parsed snapshot",
+        ),
+        utc("2024-11-03T06:30:00Z"),
+    );
+    let finite = testing::expect_ok(
+        dt::TimeZone::load_from(application::fixture_path("testdata/zones"), "Synthetic/Finite"),
+        "finite",
+    );
+    match testing::expect_err(
+        schedule.next(
+            utc("2050-01-01T00:00:00Z"),
+            finite,
+            cron::Search::new(utc("2050-01-03T00:00:00Z")),
+        ),
+        "unknown future",
+    ) {
+        cron::Error::DateTime(dt::Error::Unsupported(_)) => (),
+        _ => testing::fail("unknown timezone data must not become NoMatch"),
+    }
+    match testing::expect_err(
+        schedule.matches(utc("2050-01-01T00:00:00Z"), finite, cron::Fold::Both),
+        "unknown conversion",
+    ) {
+        cron::Error::DateTime(dt::Error::Unsupported(_)) => (),
+        _ => testing::fail("matches propagates timezone failures"),
+    }
+}

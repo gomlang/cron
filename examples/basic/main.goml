@@ -1,0 +1,20 @@
+package main;
+
+use ecosystem::cron as cron;
+use ecosystem::datetime as dt;
+use std::testing;
+
+pub fn exercise() -> () {
+    let schedule = testing::expect_ok(cron::Schedule::parse("30 9 * * MON-FRI"), "schedule");
+    let zone = dt::TimeZone::fixed("UTC", dt::Offset::utc());
+    let after = testing::expect_ok(dt::UtcInstant::parse("2024-01-05T09:30:00Z"), "after");
+    let until = testing::expect_ok(dt::UtcInstant::parse("2024-01-10T00:00:00Z"), "until");
+    let result = testing::expect_ok(schedule.next(after, zone, cron::Search::new(until)), "next");
+    testing::assert_eq(result.to_string(), "2024-01-08T09:30:00Z");
+    testing::assert(testing::expect_ok(schedule.matches(result, zone, cron::Fold::Both), "matches"));
+}
+
+fn main() -> () {
+    exercise();
+    println("cron: ok");
+}

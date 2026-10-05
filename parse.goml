@@ -1,0 +1,147 @@
+package cron;
+
+fn invalid(field: isize, message: string) -> Error {
+    Error::Parse { field, message }
+}
+
+fn number(text: string, field: isize) -> Result[isize, Error] {
+    if text == "" {
+        return Result::Err(invalid(field, "empty number"));
+    }
+    let mut value = 0;
+    for byte in text.to_bytes() {
+        if byte < b'0' || byte > b'9' {
+            return Result::Err(invalid(field, "expected ASCII digits"));
+        }
+        value = value * 10 + (byte - b'0').to_isize();
+        if value > 9999 {
+            return Result::Err(invalid(field, "number exceeds 9999"));
+        }
+    }
+    Result::Ok(value)
+}
+
+fn atom(text: string, field: isize) -> Result[isize, Error] {
+    let lower = text.to_ascii_lowercase();
+    if field == 3 {
+        let names = [
+            "jan",
+            "feb",
+            "mar",
+            "apr",
+            "may",
+            "jun",
+            "jul",
+            "aug",
+            "sep",
+            "oct",
+            "nov",
+            "dec",
+        ];
+        for index in 0..12 {
+            if lower == names[index] {
+                return Result::Ok(index + 1);
+            }
+        }
+    }
+    if field == 4 {
+        let names = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"];
+        for index in 0..7 {
+            if lower == names[index] {
+                return Result::Ok(index);
+            }
+        }
+    }
+    number(text, field)
+}
+
+fn parse_field(text: string, field: isize, low: isize, high: isize) -> Result[Selection, Error] {
+    let mut bits: i64 = 0;
+    let mut wildcard = false;
+    let one: i64 = 1;
+    for item in text.split(",") {
+        let parts = item.split("/");
+        if parts.len() > 2 {
+            return Result::Err(invalid(field, "multiple steps"));
+        }
+        let step = if parts.len() == 2 {
+            number(parts[1], field)?
+        } else {
+            1
+        };
+        if step == 0 {
+            return Result::Err(invalid(field, "step must be positive"));
+        }
+        let range = parts[0].split("-");
+        let (start, end) = if parts[0] == "*" {
+            if step == 1 {
+                wildcard = true;
+            };
+            (low, high)
+        } else {
+            if range.len() > 2 {
+                return Result::Err(invalid(field, "multiple range separators"));
+            }
+            let start = atom(range[0], field)?;
+            let end = if range.len() == 2 {
+                atom(range[1], field)?
+            } else if parts.len() == 2 {
+                high
+            } else {
+                start
+            };
+            (start, end)
+        };
+        if start < low || end > high || start > end {
+            return Result::Err(invalid(field, "value or range outside field bounds"));
+        }
+        let mut value = start;
+        while value <= end {
+            let bit = if field == 4 && value == 7 {
+                0
+            } else {
+                value
+            };
+            bits = bits | (one << bit);
+            value += step;
+        }
+    }
+    Result::Ok(Selection { bits, wildcard })
+}
+
+impl Schedule {
+    pub fn parse(expression: string) -> Result[Schedule, Error] {
+        if expression.byte_len() > 4096 {
+            return Result::Err(invalid(-1, "expression exceeds 4096 bytes"));
+        }
+        let fields: Vec[string] = Vec::new();
+        let mut start = 0;
+        for index in 0..expression.byte_len() {
+            let byte = expression.byte_get(index);
+            let whitespace = byte == b' ' || byte >= 9 && byte <= 13;
+            if whitespace {
+                if start < index {
+                    fields.push(expression.byte_slice(start, index));
+                }
+                start = index + 1;
+            } else if byte > 127 {
+                return Result::Err(invalid(-1, "expression must be ASCII"));
+            }
+        }
+        if start < expression.byte_len() {
+            fields.push(expression.byte_slice(start, expression.byte_len()));
+        }
+        if fields.len() != 5 {
+            return Result::Err(invalid(-1, "expected five fields"));
+        }
+        Result::Ok(
+            Schedule {
+                minute: parse_field(fields[0], 0, 0, 59)?,
+                hour: parse_field(fields[1], 1, 0, 23)?,
+                dom: parse_field(fields[2], 2, 1, 31)?,
+                month: parse_field(fields[3], 3, 1, 12)?,
+                dow: parse_field(fields[4], 4, 0, 7)?,
+            },
+        )
+    }
+}

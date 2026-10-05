@@ -1,0 +1,8 @@
+[module]
+path = "ecosystem::cron"
+
+[dependencies]
+"ecosystem::datetime" = "0.1.0"
+
+[dev-dependencies]
+"ecosystem::verification" = "0.1.0"

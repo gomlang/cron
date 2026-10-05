@@ -1,0 +1,125 @@
+package cron;
+
+use ecosystem::datetime as dt;
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum Error {
+    Parse {
+        field: isize,
+        message: string,
+    },
+    InvalidOptions(string),
+    WorkLimit,
+    NoMatch,
+    DateTime(dt::Error),
+}
+
+impl ToString for Error {
+    fn to_string(self: Error) -> string {
+        self.debug()
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum Fold {
+    Both,
+    Earlier,
+    Later,
+}
+
+pub struct Search {
+    pub until: dt::UtcInstant,
+    pub max_steps: isize,
+    pub fold: Fold,
+}
+
+impl Search {
+    pub fn new(until: dt::UtcInstant) -> Search {
+        Search { until, max_steps: 1000000, fold: Fold::Both }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum Field {
+    Minute,
+    Hour,
+    DayOfMonth,
+    Month,
+    DayOfWeek,
+}
+
+struct Selection {
+    bits: i64,
+    wildcard: bool,
+}
+
+pub struct Schedule {
+    minute: Selection,
+    hour: Selection,
+    dom: Selection,
+    month: Selection,
+    dow: Selection,
+}
+
+fn selected(value: Selection, number: isize) -> bool {
+    let one: i64 = 1;
+    value.bits & (one << number) != 0
+}
+
+impl Schedule {
+    pub fn values(self: Schedule, field: Field) -> Vec[isize] {
+        let (selection, low, high) = match field {
+            Field::Minute => (self.minute, 0, 59),
+            Field::Hour => (self.hour, 0, 23),
+            Field::DayOfMonth => (self.dom, 1, 31),
+            Field::Month => (self.month, 1, 12),
+            Field::DayOfWeek => (self.dow, 0, 6),
+        };
+        let output = Vec::new();
+        for number in low..(high + 1) {
+            if selected(selection, number) {
+                output.push(number);
+            }
+        }
+        output
+    }
+
+    fn day_matches(self: Schedule, date: dt::Date) -> bool {
+        let dom = selected(self.dom, date.day());
+        let dow = selected(self.dow, date.weekday() % 7);
+        if self.dom.wildcard || self.dow.wildcard {
+            dom && dow
+        } else {
+            dom || dow
+        }
+    }
+
+    pub fn matches(self: Schedule, instant: dt::UtcInstant, zone: dt::TimeZone, fold: Fold) -> Result[
+        bool,
+        Error,
+    ] {
+        let local = zone.at(instant).map_err(Error::DateTime)?.local();
+        let time = local.time();
+        if time.second() != 0 || time.nanosecond() != 0 || !selected(self.minute, time.minute())
+            || !selected(self.hour, time.hour())
+            || !selected(self.month, local.date().month())
+            || !self.day_matches(local.date()) {
+            return Result::Ok(false);
+        }
+        if fold == Fold::Both {
+            return Result::Ok(true);
+        }
+        match zone.resolve_local(local).map_err(Error::DateTime)? {
+            dt::LocalResult::Ambiguous(earlier, later) => Result::Ok(
+                instant
+                    == if fold == Fold::Earlier {
+                        earlier.instant()
+                    } else {
+                        later.instant()
+                    },
+            ),
+            dt::LocalResult::Unique(_) => Result::Ok(true),
+            dt::LocalResult::Nonexistent => Result::Ok(false),
+        }
+    }
+}

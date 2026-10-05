@@ -1,0 +1,8 @@
+package tests;
+
+use ecosystem::cron::examples::basic as application;
+
+#[test]
+fn public_schedule_example() -> () {
+    application::exercise();
+}
