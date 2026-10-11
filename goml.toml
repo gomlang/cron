@@ -2,7 +2,7 @@
 path = "ecosystem::cron"
 
 [dependencies]
-"ecosystem::datetime" = "0.1.0"
+"ecosystem::datetime" = true
 
 [dev-dependencies]
-"ecosystem::verification" = "0.1.0"
+"ecosystem::verification" = true
