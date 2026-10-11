@@ -3,7 +3,7 @@
 `ecosystem::cron` parses five-field cron schedules, matches instants in an explicit
 `ecosystem::datetime::TimeZone`, and finds the earliest matching instant strictly
 after a supplied instant. Implementation is pure GoML; Gregorian calendar and
-TZif/POSIX timezone behavior come from datetime. Requires the [current GoML toolchain](https://github.com/gomlang/verification/blob/main/ci/toolchain.json) with unversioned registry support.
+TZif/POSIX timezone behavior come from datetime. Requires the [current GoML toolchain](https://github.com/gomlang/workflows/blob/main/ci/toolchain.json) with unversioned registry support.
 
 ```goml
 use ecosystem::cron as cron;
@@ -122,7 +122,7 @@ From this repository:
 
 ```sh
 goml test --timeout 120s
-(cd ../verification && just ecosystem-test cron)
+(cd ../workflows && just ecosystem-test cron)
 goml run --example basic
 GOFLAGS=-race CGO_ENABLED=1 goml test --target-dir _artifact/race --timeout 300s
 ```

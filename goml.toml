@@ -5,4 +5,4 @@ path = "ecosystem::cron"
 "ecosystem::datetime" = true
 
 [dev-dependencies]
-"ecosystem::verification" = true
+"ecosystem::testkit" = true
